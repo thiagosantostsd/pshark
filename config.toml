@@ -1,0 +1,84 @@
+[tshark]
+path = "C:\\Program Files\\Wireshark\\tshark.exe"
+filters = ["-Y","asterix.category == 21"]
+parameters=["-n","-T", "fields","-E", "separator=;","-E", "occurrence=a"]
+
+
+[categories]
+
+[[categories.21]]
+Key = "TARGET_ADDRESS"
+Value = "asterix.021_080_VALUE"
+
+[[categories.21]]
+Key = "CALLSIGN"
+Value = "asterix.021_170_VALUE"
+
+[[categories.21]]
+Key = "TIME_MSG_RX(s)"
+Value = "asterix.021_073_VALUE"
+
+[[categories.21]]
+Key = "TIME_MSG_TX(s)"
+Value = "asterix.021_077_VALUE"
+
+[[categories.21]]
+Key = "INDICADOR_AGE(s)"
+Value = "asterix.021_295_QI_VALUE"
+
+[[categories.21]]
+Key = "NACV"
+Value = "asterix.021_090_NUCRNACV"
+
+[[categories.21]]
+Key = "NIC"
+Value = "asterix.021_090_NUCPNIC"
+
+[[categories.21]]
+Key = "SIL"
+Value = "asterix.021_090_SIL"
+
+[[categories.21]]
+Key = "NACP"
+Value = "asterix.021_090_NACP"
+
+[[categories.21]]
+Key = "SDA"
+Value = "asterix.021_090_SDA"
+
+[[categories.21]]
+Key = "FLIGHT_LEVEL(FL)"
+Value = "asterix.021_145_VALUE"
+
+#[[categories.21]]
+#Key = "LATITUDE"
+#Value = "asterix.021_130_LAT"
+
+#[[categories.21]]
+#Key = "LONGITUDE"
+#Value = "asterix.021_130_LON"
+
+#[[categories.21]]
+#Key = "GEOMETRIC_HEIGHT(ft)"
+#Value = "asterix.021_140_VALUE"
+
+#[[categories.21]]
+#Key = "VERTICA_RATE(ft/min)"
+#Value = "asterix.021_157_GVR"
+
+#[[categories.21]]
+#Key = "GROUND_SPEED(kt/s)"
+#Value = "asterix.021_160_GS"
+
+#[[categories.21]]
+#Key = "TRACK_ANGLE(º)"
+#Value = "asterix.021_157_GVR"
+
+
+#[[categories.21]]
+#Key = "GVA"
+#Value = "asterix.021_090_GVA"
+
+#[[categories.21]]
+#Key = "PIC"
+#Value = "asterix.021_090_PIC"
