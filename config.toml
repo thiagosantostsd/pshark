@@ -1,84 +1,64 @@
 [tshark]
 path = "C:\\Program Files\\Wireshark\\tshark.exe"
-filters = ["-Y","asterix.category == 21"]
 parameters=["-n","-T", "fields","-E", "separator=;","-E", "occurrence=a"]
 
 
+[[frame]]
+label = "TIMESTAMP"
+field = "frame.time_epoch"
+type  = "float64"
+
 [categories]
 
-[[categories.21]]
-Key = "TARGET_ADDRESS"
-Value = "asterix.021_080_VALUE"
 
 [[categories.21]]
-Key = "CALLSIGN"
-Value = "asterix.021_170_VALUE"
+label = "TARGET_ADDRESS"
+field = "asterix.021_080_VALUE"
+type  = "string"
 
 [[categories.21]]
-Key = "TIME_MSG_RX(s)"
-Value = "asterix.021_073_VALUE"
+label = "CALLSIGN"
+field = "asterix.021_170_VALUE"
+type  = "string"
 
 [[categories.21]]
-Key = "TIME_MSG_TX(s)"
-Value = "asterix.021_077_VALUE"
+label = "TIME_MSG_RX(s)"
+field = "asterix.021_073_VALUE"
+type  = "float32"
 
 [[categories.21]]
-Key = "INDICADOR_AGE(s)"
-Value = "asterix.021_295_QI_VALUE"
+label = "TIME_MSG_TX(s)"
+field = "asterix.021_077_VALUE"
+type  = "float32"
 
 [[categories.21]]
-Key = "NACV"
-Value = "asterix.021_090_NUCRNACV"
+label = "INDICADOR_AGE(s)"
+field = "asterix.021_295_QI_VALUE"
+type  = "float32"
 
 [[categories.21]]
-Key = "NIC"
-Value = "asterix.021_090_NUCPNIC"
+label = "NACV"
+field = "asterix.021_090_NUCRNACV"
+type  = "uint8"
 
 [[categories.21]]
-Key = "SIL"
-Value = "asterix.021_090_SIL"
+label = "NIC"
+field = "asterix.021_090_NUCPNIC"
+type  = "uint8"
 
 [[categories.21]]
-Key = "NACP"
-Value = "asterix.021_090_NACP"
+label = "SIL"
+field = "asterix.021_090_SIL"
+type  = "uint8"
 
 [[categories.21]]
-Key = "SDA"
-Value = "asterix.021_090_SDA"
+label = "NACP"
+field = "asterix.021_090_NACP"
+type  = "uint8"
 
 [[categories.21]]
-Key = "FLIGHT_LEVEL(FL)"
-Value = "asterix.021_145_VALUE"
-
-#[[categories.21]]
-#Key = "LATITUDE"
-#Value = "asterix.021_130_LAT"
-
-#[[categories.21]]
-#Key = "LONGITUDE"
-#Value = "asterix.021_130_LON"
-
-#[[categories.21]]
-#Key = "GEOMETRIC_HEIGHT(ft)"
-#Value = "asterix.021_140_VALUE"
-
-#[[categories.21]]
-#Key = "VERTICA_RATE(ft/min)"
-#Value = "asterix.021_157_GVR"
-
-#[[categories.21]]
-#Key = "GROUND_SPEED(kt/s)"
-#Value = "asterix.021_160_GS"
-
-#[[categories.21]]
-#Key = "TRACK_ANGLE(º)"
-#Value = "asterix.021_157_GVR"
+label = "SDA"
+field = "asterix.021_090_SDA"
+type  = "uint8"
 
 
-#[[categories.21]]
-#Key = "GVA"
-#Value = "asterix.021_090_GVA"
-
-#[[categories.21]]
-#Key = "PIC"
-#Value = "asterix.021_090_PIC"

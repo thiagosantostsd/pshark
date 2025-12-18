@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/csv"
 	"flag"
 	"fmt"
@@ -9,35 +10,41 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/apache/arrow/go/v14/arrow"
+	"github.com/apache/arrow/go/v14/arrow/array"
+	"github.com/apache/arrow/go/v14/arrow/memory"
+	"github.com/apache/arrow/go/v14/parquet"
+	"github.com/apache/arrow/go/v14/parquet/compress"
+	"github.com/apache/arrow/go/v14/parquet/file"
+	"github.com/apache/arrow/go/v14/parquet/pqarrow"
 )
 
+//
+// ---------------- CONFIG ----------------
+//
+
+type FieldDef struct {
+	Label string `toml:"label"`
+	Field string `toml:"field"`
+	Type  string `toml:"type"` // string, int32, int64, float32, float64, uint8, uint16
+}
+
+type TShark struct {
+	Path       string   `toml:"path"`
+	Parameters []string `toml:"parameters"`
+}
+
 type Config struct {
-	Tshark struct {
-		Path       string   `toml:"path"`
-		Parameters []string `toml:"parameters"`
-	} `toml:"tshark"`
-
-	Categories map[string][]struct {
-		Key   string `toml:"Key"`
-		Value string `toml:"Value"`
-	} `toml:"categories"`
-}
-
-type Job struct {
-	File string
-}
-
-type App struct {
-	cfg       Config
-	category  string
-	timestamp bool
-	jobs      chan Job
-	wg        sync.WaitGroup
+	Tshark     TShark                `toml:"tshark"`
+	Categories map[string][]FieldDef `toml:"categories"`
+	Frame      []FieldDef             `toml:"frame"` // campos a colocar no início
 }
 
 func loadConfig(path string) (Config, error) {
@@ -50,56 +57,179 @@ func loadConfig(path string) (Config, error) {
 	return cfg, err
 }
 
-func main() {
-	dir := flag.String("d", "", "Diretório PCAP")
-	category := flag.String("c", "", "Categoria ASTERIX")
-	timestamp := flag.Bool("ts", false, "Adicionar timestamp")
-	workers := flag.Int("j", runtime.NumCPU(), "Jobs paralelos")
-	flag.Parse()
+//
+// ---------------- ARROW / PARQUET ----------------
+//
 
-	if *dir == "" || *category == "" {
-		fmt.Println("❌ Use -d <dir> -c <cat>")
-		os.Exit(1)
+type ParquetWriter struct {
+	schema   *arrow.Schema
+	writer   *pqarrow.FileWriter
+	builders []array.Builder
+	mem      memory.Allocator
+	rows     int
+	batch    int
+}
+
+func (f FieldDef) ArrowType() arrow.DataType {
+	switch f.Type {
+	case "int32":
+		return arrow.PrimitiveTypes.Int32
+	case "int64":
+		return arrow.PrimitiveTypes.Int64
+	case "float32":
+		return arrow.PrimitiveTypes.Float32
+	case "float64":
+		return arrow.PrimitiveTypes.Float64
+	case "uint8":
+		return arrow.PrimitiveTypes.Uint8
+	case "uint16":
+		return arrow.PrimitiveTypes.Uint16
+	default:
+		return arrow.BinaryTypes.String
+	}
+}
+
+func newParquetWriter(path string, fields []FieldDef) (*ParquetWriter, error) {
+	mem := memory.NewGoAllocator()
+
+	arrowFields := make([]arrow.Field, len(fields))
+	builders := make([]array.Builder, len(fields))
+
+	for i, f := range fields {
+		arrowFields[i] = arrow.Field{
+			Name:     f.Label,
+			Type:     f.ArrowType(),
+			Nullable: true,
+		}
+		builders[i] = array.NewBuilder(mem, f.ArrowType())
 	}
 
-	cfg, err := loadConfig("config.toml")
+	schema := arrow.NewSchema(arrowFields, nil)
+
+	file, err := os.Create(path)
 	if err != nil {
-		fmt.Println("❌ Erro config:", err)
-		os.Exit(1)
+		return nil, err
 	}
 
-	files, _ := filepath.Glob(filepath.Join(*dir, "*"))
-	if len(files) == 0 {
-		fmt.Println("⚠️ Nenhum PCAP encontrado")
+	props := parquet.NewWriterProperties(
+		parquet.WithCompression(compress.Codecs.Snappy),
+	)
+
+	writer, err := pqarrow.NewFileWriter(
+		schema,
+		file,
+		props,
+		pqarrow.DefaultWriterProps(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ParquetWriter{
+		schema:   schema,
+		writer:   writer,
+		builders: builders,
+		mem:      mem,
+		batch:    1024,
+	}, nil
+}
+
+func appendValue(b array.Builder, v string) {
+	if v == "" {
+		b.AppendNull()
 		return
 	}
 
-	app := App{
-		cfg:       cfg,
-		category:  *category,
-		timestamp: *timestamp,
-		jobs:      make(chan Job),
+	switch bb := b.(type) {
+	case *array.Int32Builder:
+		var x int32
+		fmt.Sscan(v, &x)
+		bb.Append(x)
+	case *array.Int64Builder:
+		var x int64
+		fmt.Sscan(v, &x)
+		bb.Append(x)
+	case *array.Float32Builder:
+		var x float32
+		fmt.Sscan(v, &x)
+		bb.Append(x)
+	case *array.Float64Builder:
+		var x float64
+		fmt.Sscan(v, &x)
+		bb.Append(x)
+	case *array.StringBuilder:
+		bb.Append(v)
+	case *array.Uint8Builder:
+		var x uint8
+		fmt.Sscan(v, &x)
+		bb.Append(x)
+	case *array.Uint16Builder:
+		var x uint16
+		fmt.Sscan(v, &x)
+		bb.Append(x)
+	default:
+		b.AppendNull()
+	}
+}
+
+func (p *ParquetWriter) WriteRow(values []string) error {
+	for i, v := range values {
+		appendValue(p.builders[i], v)
+	}
+	p.rows++
+	if p.rows >= p.batch {
+		return p.flush()
+	}
+	return nil
+}
+
+func (p *ParquetWriter) flush() error {
+	arrays := make([]arrow.Array, len(p.builders))
+	for i, b := range p.builders {
+		arrays[i] = b.NewArray()
 	}
 
-	start := time.Now()
-
-	// Workers
-	for i := 0; i < *workers; i++ {
-		go app.worker()
+	record := array.NewRecord(p.schema, arrays, int64(p.rows))
+	if err := p.writer.Write(record); err != nil {
+		return err
 	}
 
-	// Envia jobs
-	for _, f := range files {
-		app.wg.Add(1)
-		app.jobs <- Job{File: f}
+	record.Release()
+
+	// recria os builders
+	for i, f := range p.schema.Fields() {
+		p.builders[i].Release()
+		p.builders[i] = array.NewBuilder(p.mem, f.Type)
 	}
 
-	close(app.jobs)
-	app.wg.Wait()
+	p.rows = 0
+	return nil
+}
 
-	fmt.Printf("\n✔ Processamento finalizado em %.2fs\n",
-		time.Since(start).Seconds(),
-	)
+func (p *ParquetWriter) Close() error {
+	if p.rows > 0 {
+		if err := p.flush(); err != nil {
+			return err
+		}
+	}
+	return p.writer.Close()
+}
+
+//
+// ---------------- APP ----------------
+//
+
+type Job struct {
+	File string
+}
+
+type App struct {
+	cfg       Config
+	category  string
+	timestamp bool
+	genCSV    bool
+	jobs      chan Job
+	wg        sync.WaitGroup
 }
 
 func (a *App) worker() {
@@ -112,76 +242,305 @@ func (a *App) worker() {
 func (a *App) processFile(filename string) {
 	start := time.Now()
 
-	fields := a.cfg.Categories[a.category]
+	// 🔹 campos de frame primeiro, depois categoria
+	fields := append(a.cfg.Frame, a.cfg.Categories[a.category]...)
 	if len(fields) == 0 {
 		fmt.Printf("❌ CAT %s não encontrada\n", a.category)
 		return
 	}
 
-	outfile := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)) + ".csv"
+	outfile := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)) + ".parquet"
 
-	var headers []string
-	var args []string
-
-	args = append(args, "-r", filename)
+	args := []string{"-r", filename}
 	args = append(args, a.cfg.Tshark.Parameters...)
 	args = append(args, "-Y", "asterix.category=="+a.category)
 
-	if a.timestamp {
-		headers = append(headers, "TIMESTAMP")
-		args = append(args, "-e", "frame.time_epoch")
+	// adiciona campos de frame primeiro
+	for _, f := range a.cfg.Frame {
+		args = append(args, "-e", f.Field)
 	}
 
-	for _, f := range fields {
-		headers = append(headers, f.Key)
-		args = append(args, "-e", f.Value)
+	// depois os campos da categoria
+	for _, f := range a.cfg.Categories[a.category] {
+		args = append(args, "-e", f.Field)
 	}
 
 	cmd := exec.Command(a.cfg.Tshark.Path, args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		fmt.Println("❌ stdout:", err)
-		return
-	}
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			fmt.Println("[tshark]", scanner.Text())
+		}
+	}()
 
 	if err := cmd.Start(); err != nil {
-		fmt.Println("❌ TShark:", err)
+		fmt.Println("❌ falha ao iniciar tshark:", err)
 		return
 	}
 
-	file, err := os.Create(outfile)
+	pw, err := newParquetWriter(outfile, fields)
 	if err != nil {
-		fmt.Println("❌ CSV:", err)
+		fmt.Println("❌ parquet:", err)
 		return
 	}
-	defer file.Close()
-
-	writer := csv.NewWriter(file)
-	writer.Comma = ';'
-	writer.Write(headers)
 
 	scanner := bufio.NewScanner(stdout)
-	buffer := make([][]string, 0, 10000)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
+	lineCount := 0
 
 	for scanner.Scan() {
-		buffer = append(buffer, strings.Split(scanner.Text(), ";"))
+		raw := strings.Split(scanner.Text(), ";")
 
-		if len(buffer) == cap(buffer) {
-			writer.WriteAll(buffer)
-			buffer = buffer[:0]
+		// separa cada campo que pode ter múltiplos valores
+		split := make([][]string, len(raw))
+		max := 1
+		for i, f := range raw {
+			parts := strings.Split(f, ",")
+			for j := range parts {
+				parts[j] = strings.TrimSpace(parts[j])
+			}
+			split[i] = parts
+			if len(parts) > max {
+				max = len(parts)
+			}
+		}
+
+		// 🔹 salva os valores de frame (timestamp, etc)
+		frameValues := make([]string, len(a.cfg.Frame))
+		for i := range a.cfg.Frame {
+			if len(split) > i && split[i][0] != "" {
+				frameValues[i] = split[i][0]
+			}
+		}
+
+		// para cada “linha” da mensagem ASTERIX
+		for i := 0; i < max; i++ {
+			row := make([]string, len(fields))
+			// frame primeiro
+			copy(row[:len(frameValues)], frameValues)
+
+			// categoria ASTERIX
+			offset := len(frameValues)
+			for j := 0; j < len(a.cfg.Categories[a.category]); j++ {
+				idx := offset + j
+				if idx < len(split) && i < len(split[idx]) {
+					row[offset+j] = split[idx][i]
+				} else {
+					row[offset+j] = ""
+				}
+			}
+
+			_ = pw.WriteRow(row)
+			
+		}
+
+		lineCount++
+		if lineCount%5000 == 0 {
+			fmt.Printf("\r%s: %d pacotes processados.   ", filepath.Base(filename), lineCount)
+		}
+	}
+	fmt.Println()
+
+	if err := cmd.Wait(); err != nil {
+		fmt.Println("❌ erro tshark:", err)
+	}
+
+	if err := pw.Close(); err != nil {
+		fmt.Println("❌ parquet close:", err)
+		return
+	}
+
+	if a.genCSV {
+		if err := parquetToCSV(outfile, a.cfg); err != nil {
+			fmt.Println("❌ CSV:", err)
 		}
 	}
 
-	if len(buffer) > 0 {
-		writer.WriteAll(buffer)
+	fmt.Printf("✔ %s → %s (%.2fs)\n", filepath.Base(filename), outfile, time.Since(start).Seconds())
+}
+
+
+func getCSVFieldOrder(cfg Config, schema *arrow.Schema) []int {
+	order := []int{}
+	frameFields := map[string]bool{}
+	for _, f := range cfg.Frame {
+		frameFields[f.Label] = true
 	}
 
-	writer.Flush()
-	cmd.Wait()
+	// Primeiro índices dos campos frame
+	for i, f := range schema.Fields() {
+		if frameFields[f.Name] {
+			order = append(order, i)
+		}
+	}
 
-	fmt.Printf("✔ %s → %s (%.2fs)\n",
-		filepath.Base(filename),
-		outfile,
-		time.Since(start).Seconds(),
-	)
+	// Depois os outros campos
+	for i, f := range schema.Fields() {
+		if !frameFields[f.Name] {
+			order = append(order, i)
+		}
+	}
+	return order
+}
+
+
+func parquetToCSV(parquetFile string, cfg Config) error {
+	csvFile := strings.TrimSuffix(parquetFile, ".parquet") + ".csv"
+
+	f, err := os.Open(parquetFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	pqReader, err := file.NewParquetReader(f)
+	if err != nil {
+		return err
+	}
+	defer pqReader.Close()
+
+	mem := memory.NewGoAllocator()
+	arrowReader, err := pqarrow.NewFileReader(pqReader, pqarrow.ArrowReadProperties{}, mem)
+	if err != nil {
+		return err
+	}
+
+	table, err := arrowReader.ReadTable(context.Background())
+	if err != nil {
+		return err
+	}
+	defer table.Release()
+
+	out, err := os.Create(csvFile)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	w := csv.NewWriter(out)
+	w.Comma = ';'
+
+	schema := table.Schema()
+	order := getCSVFieldOrder(cfg, schema)
+
+	// header
+	headers := make([]string, len(schema.Fields()))
+	for i, idx := range order {
+		headers[i] = schema.Field(idx).Name
+	}
+	if err := w.Write(headers); err != nil {
+		return err
+	}
+
+	// records
+	recReader := array.NewTableReader(table, 1024)
+	defer recReader.Release()
+
+	for recReader.Next() {
+		rec := recReader.Record()
+		rows := int(rec.NumRows())
+		cols := int(rec.NumCols())
+
+		for r := 0; r < rows; r++ {
+			line := make([]string, cols)
+			for i, idx := range order {
+				line[i] = valueAt(rec.Column(idx), r)
+			}
+			if err := w.Write(line); err != nil {
+				return err
+			}
+		}
+		rec.Release()
+	}
+
+	w.Flush()
+	return w.Error()
+}
+
+
+func valueAt(arr arrow.Array, row int) string {
+	if arr.IsNull(row) {
+		return ""
+	}
+
+	switch a := arr.(type) {
+	case *array.Int32:
+		return strconv.FormatInt(int64(a.Value(row)), 10)
+	case *array.Int64:
+		return strconv.FormatInt(a.Value(row), 10)
+	case *array.Float32:
+		return strconv.FormatFloat(float64(a.Value(row)), 'f', -1, 32)
+	case *array.Float64:
+		return strconv.FormatFloat(a.Value(row), 'f', -1, 64)
+	case *array.String:
+		return a.Value(row)
+	case *array.Uint8:
+		return strconv.FormatUint(uint64(a.Value(row)), 10)
+	case *array.Uint16:
+		return strconv.FormatUint(uint64(a.Value(row)), 10)
+	default:
+		return ""
+	}
+}
+
+//
+// ---------------- MAIN ----------------
+//
+
+func main() {
+	file := flag.String("f", "", "PCAP file")
+	dir := flag.String("d", "", "PCAP directory")
+	category := flag.String("c", "", "ASTERIX category")
+	cfgPath := flag.String("cfg", "config.toml", "Config file")
+	workers := flag.Int("j", runtime.NumCPU(), "Workers")
+	csvFile := flag.Bool("csv", false, "Gerar CSV a partir do Parquet")
+
+	flag.Parse()
+
+	if *category == "" {
+		fmt.Println("❌ Use -c <category>")
+		return
+	}
+
+	cfg, err := loadConfig(*cfgPath)
+	if err != nil {
+		fmt.Println("❌ config:", err)
+		return
+	}
+
+	files := []string{}
+	if *file != "" {
+		files = append(files, *file)
+	} else if *dir != "" {
+		matches, _ := filepath.Glob(filepath.Join(*dir, "*.pcap"))
+		files = append(files, matches...)
+	}
+
+	if len(files) == 0 {
+		fmt.Println("❌ Nenhum arquivo PCAP encontrado")
+		return
+	}
+
+	app := App{
+		cfg:      cfg,
+		category: *category,
+		jobs:     make(chan Job),
+		genCSV:   *csvFile,
+	}
+
+	for i := 0; i < *workers; i++ {
+		go app.worker()
+	}
+
+	for _, f := range files {
+		app.wg.Add(1)
+		app.jobs <- Job{File: f}
+	}
+
+	close(app.jobs)
+	app.wg.Wait()
 }
