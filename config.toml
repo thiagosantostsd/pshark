@@ -8,55 +8,55 @@ label = "TIMESTAMP"
 field = "frame.time_epoch"
 type  = "float64"
 
-[categories]
+[datagroup]
 
 
-[[categories.21]]
+[[datagroup.adsb]]
 label = "TARGET_ADDRESS"
 field = "asterix.021_080_VALUE"
 type  = "string"
 
-[[categories.21]]
+[[datagroup.adsb]]
 label = "CALLSIGN"
 field = "asterix.021_170_VALUE"
 type  = "string"
 
-[[categories.21]]
+[[datagroup.adsb]]
 label = "TIME_MSG_RX(s)"
 field = "asterix.021_073_VALUE"
 type  = "float32"
 
-[[categories.21]]
+[[datagroup.adsb]]
 label = "TIME_MSG_TX(s)"
 field = "asterix.021_077_VALUE"
 type  = "float32"
 
-[[categories.21]]
+[[datagroup.adsb]]
 label = "INDICADOR_AGE(s)"
 field = "asterix.021_295_QI_VALUE"
 type  = "float32"
 
-[[categories.21]]
+[[datagroup.adsb]]
 label = "NACV"
 field = "asterix.021_090_NUCRNACV"
 type  = "uint8"
 
-[[categories.21]]
+[[datagroup.adsb]]
 label = "NIC"
 field = "asterix.021_090_NUCPNIC"
 type  = "uint8"
 
-[[categories.21]]
+[[datagroup.adsb]]
 label = "SIL"
 field = "asterix.021_090_SIL"
 type  = "uint8"
 
-[[categories.21]]
+[[datagroup.adsb]]
 label = "NACP"
 field = "asterix.021_090_NACP"
 type  = "uint8"
 
-[[categories.21]]
+[[datagroup.adsb]]
 label = "SDA"
 field = "asterix.021_090_SDA"
 type  = "uint8"

@@ -30,7 +30,7 @@ import (
 // ---------------- CONFIG ----------------
 //
 
-type FieldDef struct {
+type DataItem struct {
 	Label string `toml:"label"`
 	Field string `toml:"field"`
 	Type  string `toml:"type"` // string, int32, int64, float32, float64, uint8, uint16
@@ -42,9 +42,9 @@ type TShark struct {
 }
 
 type Config struct {
-	Tshark     TShark                `toml:"tshark"`
-	Categories map[string][]FieldDef `toml:"categories"`
-	Frame      []FieldDef             `toml:"frame"` // campos a colocar no início
+	Tshark    TShark                `toml:"tshark"`
+	Datagroup map[string][]DataItem `toml:"datagroup"`
+	Frame     []DataItem            `toml:"frame"` // campos a colocar no início
 }
 
 func loadConfig(path string) (Config, error) {
@@ -70,7 +70,7 @@ type ParquetWriter struct {
 	batch    int
 }
 
-func (f FieldDef) ArrowType() arrow.DataType {
+func (f DataItem) ArrowType() arrow.DataType {
 	switch f.Type {
 	case "int32":
 		return arrow.PrimitiveTypes.Int32
@@ -89,7 +89,7 @@ func (f FieldDef) ArrowType() arrow.DataType {
 	}
 }
 
-func newParquetWriter(path string, fields []FieldDef) (*ParquetWriter, error) {
+func newParquetWriter(path string, fields []DataItem) (*ParquetWriter, error) {
 	mem := memory.NewGoAllocator()
 
 	arrowFields := make([]arrow.Field, len(fields))
@@ -225,7 +225,7 @@ type Job struct {
 
 type App struct {
 	cfg       Config
-	category  string
+	datalist  string
 	timestamp bool
 	genCSV    bool
 	jobs      chan Job
@@ -243,9 +243,9 @@ func (a *App) processFile(filename string) {
 	start := time.Now()
 
 	// 🔹 campos de frame primeiro, depois categoria
-	fields := append(a.cfg.Frame, a.cfg.Categories[a.category]...)
+	fields := append(a.cfg.Frame, a.cfg.Datagroup[a.datalist]...)
 	if len(fields) == 0 {
-		fmt.Printf("❌ CAT %s não encontrada\n", a.category)
+		fmt.Printf("❌ CAT %s não encontrada\n", a.datalist)
 		return
 	}
 
@@ -253,7 +253,7 @@ func (a *App) processFile(filename string) {
 
 	args := []string{"-r", filename}
 	args = append(args, a.cfg.Tshark.Parameters...)
-	args = append(args, "-Y", "asterix.category=="+a.category)
+	//args = append(args, "-Y", "asterix.category=="+a.category)
 
 	// adiciona campos de frame primeiro
 	for _, f := range a.cfg.Frame {
@@ -261,7 +261,7 @@ func (a *App) processFile(filename string) {
 	}
 
 	// depois os campos da categoria
-	for _, f := range a.cfg.Categories[a.category] {
+	for _, f := range a.cfg.Datagroup[a.datalist] {
 		args = append(args, "-e", f.Field)
 	}
 
@@ -325,7 +325,7 @@ func (a *App) processFile(filename string) {
 
 			// categoria ASTERIX
 			offset := len(frameValues)
-			for j := 0; j < len(a.cfg.Categories[a.category]); j++ {
+			for j := 0; j < len(a.cfg.Datagroup[a.datalist]); j++ {
 				idx := offset + j
 				if idx < len(split) && i < len(split[idx]) {
 					row[offset+j] = split[idx][i]
@@ -335,7 +335,7 @@ func (a *App) processFile(filename string) {
 			}
 
 			_ = pw.WriteRow(row)
-			
+
 		}
 
 		lineCount++
@@ -363,7 +363,6 @@ func (a *App) processFile(filename string) {
 	fmt.Printf("✔ %s → %s (%.2fs)\n", filepath.Base(filename), outfile, time.Since(start).Seconds())
 }
 
-
 func getCSVFieldOrder(cfg Config, schema *arrow.Schema) []int {
 	order := []int{}
 	frameFields := map[string]bool{}
@@ -386,7 +385,6 @@ func getCSVFieldOrder(cfg Config, schema *arrow.Schema) []int {
 	}
 	return order
 }
-
 
 func parquetToCSV(parquetFile string, cfg Config) error {
 	csvFile := strings.TrimSuffix(parquetFile, ".parquet") + ".csv"
@@ -461,7 +459,6 @@ func parquetToCSV(parquetFile string, cfg Config) error {
 	return w.Error()
 }
 
-
 func valueAt(arr arrow.Array, row int) string {
 	if arr.IsNull(row) {
 		return ""
@@ -494,15 +491,15 @@ func valueAt(arr arrow.Array, row int) string {
 func main() {
 	file := flag.String("f", "", "PCAP file")
 	dir := flag.String("d", "", "PCAP directory")
-	category := flag.String("c", "", "ASTERIX category")
+	datagroup := flag.String("g", "", "PCAP datagroup")
 	cfgPath := flag.String("cfg", "config.toml", "Config file")
 	workers := flag.Int("j", runtime.NumCPU(), "Workers")
 	csvFile := flag.Bool("csv", false, "Gerar CSV a partir do Parquet")
 
 	flag.Parse()
 
-	if *category == "" {
-		fmt.Println("❌ Use -c <category>")
+	if *datagroup == "" {
+		fmt.Println("❌ Use -g <datagroup>")
 		return
 	}
 
@@ -527,7 +524,7 @@ func main() {
 
 	app := App{
 		cfg:      cfg,
-		category: *category,
+		datalist: *datagroup,
 		jobs:     make(chan Job),
 		genCSV:   *csvFile,
 	}
